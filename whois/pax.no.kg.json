@@ -3,9 +3,8 @@
     "domain": "pax",
     "sld": "no.kg",
     "nameservers": [
-        "ns1.hostry.com",
-        "ns2.hostry.com",
-        "ns3.hostry.com"
+        "fns1.42.pl.",
+        "fns1.42.pl."
     ],
     "agree_to_agreements": {
         "registration_and_use_agreement": true,
