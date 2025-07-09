@@ -1,0 +1,16 @@
+{
+  "registrant": "fufhome@gmail.com",
+  "domain": "home",
+  "sld": "no.kg",
+  "nameservers": [
+    "buck.ns.cloudflare.com",
+    "elisa.ns.cloudflare.com",
+    "ns63.cloudns.net",
+    "ns64.cloudns.uk"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
