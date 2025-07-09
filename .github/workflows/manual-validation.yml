@@ -1,0 +1,143 @@
+name: Manual PR Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate'
+        required: true
+        type: string
+      force_validation:
+        description: 'Force validation even if PR is closed'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  manual-validate:
+    runs-on: ubuntu-latest
+    name: Manual PR Validation
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: |
+        cd .github/scripts
+        npm install
+
+    - name: Get PR information
+      id: pr-info
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const prNumber = '${{ github.event.inputs.pr_number }}';
+          const forceValidation = '${{ github.event.inputs.force_validation }}' === 'true';
+          
+          try {
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(prNumber)
+            });
+            
+            if (pullRequest.state === 'closed' && !forceValidation) {
+              core.setFailed(`PR #${prNumber} is closed. Use force_validation to validate anyway.`);
+              return;
+            }
+            
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(prNumber)
+            });
+            
+            core.setOutput('pr-title', pullRequest.title);
+            core.setOutput('pr-body', pullRequest.body || '');
+            core.setOutput('pr-number', prNumber);
+            core.setOutput('pr-author', pullRequest.user.login);
+            core.setOutput('files', JSON.stringify(files));
+            core.setOutput('head-sha', pullRequest.head.sha);
+            core.setOutput('pr-state', pullRequest.state);
+            
+          } catch (error) {
+            core.setFailed(`Failed to get PR #${prNumber}: ${error.message}`);
+          }
+
+    - name: Validate Pull Request
+      if: steps.pr-info.outputs.pr-title
+      run: |
+        cd .github/scripts
+        node validate-pr.js
+      env:
+        PR_TITLE: ${{ steps.pr-info.outputs.pr-title }}
+        PR_BODY: ${{ steps.pr-info.outputs.pr-body }}
+        PR_NUMBER: ${{ steps.pr-info.outputs.pr-number }}
+        PR_AUTHOR: ${{ steps.pr-info.outputs.pr-author }}
+        PR_FILES: ${{ steps.pr-info.outputs.files }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
+    - name: Comment validation result
+      if: always() && steps.pr-info.outputs.pr-title
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const prNumber = '${{ steps.pr-info.outputs.pr-number }}';
+          
+          let validationResult;
+          try {
+            const resultData = fs.readFileSync('.github/scripts/validation-result.json', 'utf8');
+            validationResult = JSON.parse(resultData);
+          } catch (error) {
+            validationResult = {
+              isValid: false,
+              errors: ['Failed to read validation results'],
+              report: '## ❌ Manual Validation Failed\n\nInternal error occurred during validation.'
+            };
+          }
+          
+          const commentBody = `## 🔍 Manual Validation Result\n\n${validationResult.report}\n\n---\n*This validation was triggered manually by @${context.actor}*`;
+          
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: parseInt(prNumber),
+            body: commentBody
+          });
+
+    - name: Output validation summary
+      if: always()
+      run: |
+        echo "=== Manual Validation Summary ==="
+        echo "PR Number: ${{ steps.pr-info.outputs.pr-number }}"
+        echo "PR State: ${{ steps.pr-info.outputs.pr-state }}"
+        echo "Triggered by: ${{ github.actor }}"
+        echo "Force validation: ${{ github.event.inputs.force_validation }}"
+        
+        if [ -f .github/scripts/validation-result.json ]; then
+          echo "Validation completed"
+          VALIDATION_RESULT=$(cat .github/scripts/validation-result.json)
+          IS_VALID=$(echo "$VALIDATION_RESULT" | jq -r '.isValid')
+          ERROR_COUNT=$(echo "$VALIDATION_RESULT" | jq -r '.errors | length')
+          echo "Result: $IS_VALID"
+          echo "Errors: $ERROR_COUNT"
+        else
+          echo "Validation result not found"
+        fi 

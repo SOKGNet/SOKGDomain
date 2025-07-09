@@ -1,0 +1,17 @@
+{
+  "name": "pr-validation-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for validating Pull Requests in GitHub Actions",
+  "main": "validate-pr.js",
+  "scripts": {
+    "validate": "node validate-pr.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+} 
