@@ -1,4 +1,4 @@
-# Domain Registration Pull Request Template
+**All items should be completed and confirmed to trigger the automatic merge workflow.**
 
 ## Operation Type
 - [ ] Create, Register a new domain name.
@@ -17,4 +17,4 @@
 - [ ] I confirm that I have read and agree to the [Privacy Policy](https://github.com/PublicFreeSuffix/PublicFreeSuffix/blob/main/agreements/privacy-policy.md).
 - [ ] I confirm that I have read and agree to the [Registration And Use Agreement](https://github.com/PublicFreeSuffix/PublicFreeSuffix/blob/main/agreements/registration-and-use-agreement-sokg.md).
 - [ ] I confirm that the domain does not contain any reserved terms from the [Reserved Words List](https://github.com/PublicFreeSuffix/PublicFreeSuffix/blob/main/reserved_words.txt).
-- [ ] I confirm that I will send email to publicfreesuffix@gmail.com using the email listed in the whois file to complete the authorization after this PR is created (if it is a change of `registrant` email request, both the old and new registrant emails need to be sent this email), and the email format must be in [AUTHORIZATION EMAIL](https://github.com/PublicFreeSuffix/PublicFreeSuffix/blob/main/AUTHORIZATION_EMAIL_TEMPLATE.md):
+- [ ] I confirm that I will send email to publicfreesuffix@gmail.com using the email listed in the whois file to complete the authorization after this PR is created (if it is a change of `registrant` email request, both the old and new registrant emails need to be sent this email), and the email format must be in [AUTHORIZATION EMAIL](https://github.com/PublicFreeSuffix/PublicFreeSuffix/blob/main/AUTHORIZATION_EMAIL_TEMPLATE.md).
