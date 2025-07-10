@@ -1,17 +1,23 @@
 const fs = require('fs');
 const path = require('path');
-const { Octokit } = require('@octokit/rest');
 const config = require('./config');
 const reservedWordsService = require('./reserved-words');
 const sldService = require('./sld-service');
 const logger = require('./logger');
+const githubService = require('./github-service');
+
+// Import validators
+const nameserversValidator = require('./validators/nameservers');
+const agreementsValidator = require('./validators/agreements');
+const registrantValidator = require('./validators/registrant');
 
 class PRValidator {
   constructor() {
-    this.octokit = new Octokit({
-      auth: process.env.GITHUB_TOKEN
-    });
-    
+    // 检查必要的环境变量
+    if (!process.env.MY_GITHUB_TOKEN) {
+      throw new Error('MY_GITHUB_TOKEN environment variable is required but not set');
+    }
+
     // PR title regex: Registration/Update/Remove: domain-name.sld
     this.titleRegex = /^(Registration|Update|Remove):\s+([a-zA-Z0-9-]+)\.(.+)$/;
     this.errors = [];
@@ -44,6 +50,16 @@ class PRValidator {
       const prData = this.getPRDataFromEnv();
       console.log(`Validating PR #${prData.number}: ${prData.title}`);
 
+      // 添加错误检查函数
+      const addError = (error) => {
+        if (error) {
+          validationResult.errors.push(error);
+          validationResult.isValid = false;
+        } else {
+          console.warn('Attempted to add null/undefined error');
+        }
+      };
+
       // 1. Validate PR title format
       const titleValidation = await this.validateTitle(prData.title);
       validationResult.details.titleValid = titleValidation.isValid;
@@ -52,15 +68,13 @@ class PRValidator {
       validationResult.details.sld = titleValidation.sld;
       
       if (!titleValidation.isValid) {
-        validationResult.errors.push(titleValidation.error);
-        validationResult.isValid = false;
+        addError(titleValidation.error);
       }
 
       // 2. Validate PR description length
       const descriptionValidation = this.validatePRDescription(prData.body);
-      if (!descriptionValidation) {
-        validationResult.errors.push('PR description cannot be empty');
-        validationResult.isValid = false;
+      if (!descriptionValidation.isValid) {
+        addError(descriptionValidation.error);
       }
 
       // 3. Validate file count
@@ -68,8 +82,7 @@ class PRValidator {
       validationResult.details.fileCountValid = fileCountValidation;
       
       if (!fileCountValidation) {
-        validationResult.errors.push('PR must contain at least one file change');
-        validationResult.isValid = false;
+        addError('PR must contain at least one file change');
       }
 
       // 4. Validate file path
@@ -79,8 +92,7 @@ class PRValidator {
         validationResult.details.fileName = prData.files[0].filename;
         
         if (!filePathValidation) {
-          validationResult.errors.push('File path is incorrect. File must be located in the whois/ directory and be a .json file.');
-          validationResult.isValid = false;
+          addError('File path is incorrect. File must be located in the whois/ directory and be a .json file.');
         }
 
         // 5. Validate JSON format (only for added and modified files)
@@ -89,8 +101,7 @@ class PRValidator {
           validationResult.details.jsonValid = jsonValidation.isValid;
           
           if (!jsonValidation.isValid) {
-            validationResult.errors.push(jsonValidation.error);
-            validationResult.isValid = false;
+            addError(jsonValidation.error);
           }
         } else if (prData.files[0].status === 'removed') {
           // For deleted files, no need to validate JSON content
@@ -105,8 +116,7 @@ class PRValidator {
           );
           
           if (!consistencyValidation.isValid) {
-            validationResult.errors.push(consistencyValidation.error);
-            validationResult.isValid = false;
+            addError(consistencyValidation.error);
           }
         }
       }
@@ -115,7 +125,7 @@ class PRValidator {
       this.logValidationResult(validationResult, prData.number);
       
       // Generate validation report
-      const report = this.generateValidationReport(validationResult, prData.author);
+      const report = await this.generateValidationReport(validationResult, prData.author);
       validationResult.report = report;
 
       // Save results to file
@@ -126,8 +136,10 @@ class PRValidator {
     } catch (error) {
       console.error('Error occurred during validation:', error);
       validationResult.isValid = false;
-      validationResult.errors.push(`Internal validation error: ${error.message}`);
-      validationResult.report = `## ❌ PR Validation Failed\n\nInternal error occurred during validation: ${error.message}`;
+      // 确保错误消息不为空
+      const errorMessage = error && error.message ? error.message : 'An unknown error occurred during validation';
+      addError(`Internal validation error: ${errorMessage}`);
+      validationResult.report = `❌ PR Validation Failed\n\nInternal error occurred during validation: ${errorMessage}`;
       this.saveValidationResult(validationResult);
       return validationResult;
     }
@@ -208,15 +220,55 @@ class PRValidator {
 
     if (!body || typeof body !== 'string') {
       result.error = 'PR description cannot be empty';
+      console.log('PR description validation failed: empty description');
       return result;
     }
 
-    // Check if description length is less than 1300 characters
-    if (body.length < config.validation.minDescriptionLength) {
-      result.error = `PR description is too short. Description should be filled according to the template, requiring at least ${config.validation.minDescriptionLength} characters. Current length: ${body.length} characters. Please use the provided PR template to complete all required confirmation items.`;
+    // 定义需要检查的关键部分
+    const requiredSections = {
+      'Operation Type': {
+        regex: /## Operation Type\s*-\s*\[[\sx]]\s*Create,\s*Register a new domain name\.\s*-\s*\[[\sx]]\s*Update,\s*Update NS information or registrant email for an existing domain\.\s*-\s*\[[\sx]]\s*Remove,\s*Cancel my domain name\./m,
+        error: 'Operation Type section is missing or incomplete. Please select one operation type.'
+      },
+      'Domain': {
+        regex: /## Domain\s*-\s*\[[\sx]]/m,
+        error: 'Domain section is missing or incomplete. Please confirm your domain name.'
+      },
+      'Confirmation Items': {
+        regex: /## Confirmation Items(\s*-\s*\[[\sx]].+){9,}/m,  // 确保至少有9个确认项
+        error: 'Confirmation Items section is missing or incomplete. All 9 confirmation items must be present.'
+      }
+    };
+
+    // 检查每个必需部分
+    const missingParts = [];
+    for (const [section, check] of Object.entries(requiredSections)) {
+      if (!check.regex.test(body)) {
+        missingParts.push(check.error);
+        console.log(`PR description validation failed: ${section} section validation failed`);
+      }
+    }
+
+    // 检查是否至少有一个 Operation Type 被选中
+    const operationTypeChecked = /## Operation Type[^[]*\[[x]]/mi.test(body);
+    if (!operationTypeChecked) {
+      missingParts.push('Please select one operation type by checking the corresponding checkbox.');
+    }
+
+    // 检查确认项是否都被选中
+    const confirmationItems = body.match(/\[[\sx]]/g) || [];
+    const checkedItems = confirmationItems.filter(item => item === '[x]').length;
+    if (checkedItems < 11) { // 1个操作类型 + 1个域名确认 + 9个确认项
+      missingParts.push(`Please check all confirmation items. Only ${checkedItems} of 11 required items are checked.`);
+      console.log(`PR description validation failed: only ${checkedItems} of 11 required checkboxes are checked`);
+    }
+
+    if (missingParts.length > 0) {
+      result.error = 'PR description validation failed:\n' + missingParts.join('\n');
       return result;
     }
 
+    console.log('PR description validation passed: all required sections and checkboxes are present');
     result.isValid = true;
     return result;
   }
@@ -339,7 +391,7 @@ class PRValidator {
     };
 
     // 1. Validate registrant field
-    const registrantValidation = this.validateRegistrant(jsonData.registrant);
+    const registrantValidation = registrantValidator.validate(jsonData.registrant);
     if (!registrantValidation.isValid) {
       result.error = registrantValidation.error;
       return result;
@@ -360,14 +412,14 @@ class PRValidator {
     }
 
     // 4. Validate nameservers field
-    const nameserversValidation = this.validateNameservers(jsonData.nameservers);
+    const nameserversValidation = nameserversValidator.validate(jsonData.nameservers);
     if (!nameserversValidation.isValid) {
       result.error = nameserversValidation.error;
       return result;
     }
 
     // 5. Validate agree_to_agreements field
-    const agreementsValidation = this.validateAgreements(jsonData.agree_to_agreements);
+    const agreementsValidation = agreementsValidator.validate(jsonData.agree_to_agreements);
     if (!agreementsValidation.isValid) {
       result.error = agreementsValidation.error;
       return result;
@@ -380,26 +432,6 @@ class PRValidator {
   /**
    * Validate registrant field (email format)
    */
-  validateRegistrant(registrant) {
-    const result = { isValid: false, error: null };
-
-    if (!registrant || typeof registrant !== 'string') {
-      result.error = 'registrant field is required and must be a string';
-      return result;
-    }
-
-    // Email format validation regular expression
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    
-    if (!emailRegex.test(registrant)) {
-      result.error = `registrant must be a valid email address. Current value: "${registrant}"`;
-      return result;
-    }
-
-    result.isValid = true;
-    return result;
-  }
-
   /**
    * Validate domain field
    */
@@ -449,18 +481,11 @@ class PRValidator {
     const result = { isValid: false, error: null };
 
     try {
-      // Get the latest reserved words list from service
+      // 获取保留字列表
       const reservedWords = await reservedWordsService.getReservedWords();
-
-      if (!reservedWords || !Array.isArray(reservedWords)) {
-        console.warn('Unable to get reserved words list, skipping reserved words check');
-        result.isValid = true;
-        return result;
-      }
-
-      // Check if domain conflicts with reserved words
       const domainLower = domain.toLowerCase();
       
+      // 检查是否与保留字冲突
       for (const reservedWord of reservedWords) {
         if (domainLower === reservedWord.toLowerCase()) {
           result.error = `Domain "${domain}" conflicts with reserved word "${reservedWord}" and cannot be used. Reserved words are used to protect system functions and avoid confusion.`;
@@ -472,20 +497,9 @@ class PRValidator {
       return result;
 
     } catch (error) {
-      console.error('Error occurred while checking reserved words:', error);
-      
-      // Use fallback reserved words to ensure safety when error occurs
-      const fallbackWords = reservedWordsService.getFallbackWords();
-      const domainLower = domain.toLowerCase();
-      
-      for (const reservedWord of fallbackWords) {
-        if (domainLower === reservedWord.toLowerCase()) {
-          result.error = `Domain "${domain}" conflicts with reserved word "${reservedWord}" and cannot be used. Reserved words are used to protect system functions and avoid confusion.`;
-          return result;
-        }
-      }
-
-      result.isValid = true;
+      // 如果无法读取保留字列表，则拒绝验证
+      logger.error('Error occurred while checking reserved words:', error);
+      result.error = error.message;
       return result;
     }
   }
@@ -515,100 +529,9 @@ class PRValidator {
   /**
    * Validate nameservers field
    */
-  validateNameservers(nameservers) {
-    const result = { isValid: false, error: null };
-
-    if (!nameservers || !Array.isArray(nameservers)) {
-      result.error = 'nameservers field is required and must be an array';
-      return result;
-    }
-
-    // Quantity validation
-    if (nameservers.length < 2) {
-      result.error = `nameservers must have at least 2 entries, currently has ${nameservers.length}`;
-      return result;
-    }
-
-    if (nameservers.length > 6) {
-      result.error = `nameservers allows maximum 6 entries, currently has ${nameservers.length}`;
-      return result;
-    }
-
-    // Duplicate validation
-    const uniqueNameservers = [...new Set(nameservers)];
-    if (uniqueNameservers.length !== nameservers.length) {
-      result.error = 'nameservers contains duplicate domain names';
-      return result;
-    }
-
-    // Domain format validation
-    const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/;
-    
-    for (let i = 0; i < nameservers.length; i++) {
-      const ns = nameservers[i];
-      
-      if (!ns || typeof ns !== 'string') {
-        result.error = `nameservers[${i}] must be a string`;
-        return result;
-      }
-
-      // Check that it cannot end with a dot
-      if (ns.endsWith('.')) {
-        result.error = `nameservers[${i}] cannot end with a dot. Current value: "${ns}"`;
-        return result;
-      }
-
-      // Validate domain format
-      if (!domainRegex.test(ns)) {
-        result.error = `nameservers[${i}] is not a valid domain format. Current value: "${ns}"`;
-        return result;
-      }
-
-      // Validate that it must contain at least one dot
-      if (!ns.includes('.')) {
-        result.error = `nameservers[${i}] must be a complete domain name (containing dots). Current value: "${ns}"`;
-        return result;
-      }
-    }
-
-    result.isValid = true;
-    return result;
-  }
-
   /**
    * Validate agree_to_agreements field
    */
-  validateAgreements(agreements) {
-    const result = { isValid: false, error: null };
-
-    if (!agreements || typeof agreements !== 'object' || Array.isArray(agreements)) {
-      result.error = 'agree_to_agreements field is required and must be an object';
-      return result;
-    }
-
-    // Required agreement fields
-    const requiredAgreements = [
-      'registration_and_use_agreement',
-      'acceptable_use_policy', 
-      'privacy_policy'
-    ];
-
-    for (const agreement of requiredAgreements) {
-      if (!(agreement in agreements)) {
-        result.error = `agree_to_agreements is missing required field: ${agreement}`;
-        return result;
-      }
-
-      if (agreements[agreement] !== true) {
-        result.error = `agree_to_agreements.${agreement} must be true. Current value: ${agreements[agreement]}`;
-        return result;
-      }
-    }
-
-    result.isValid = true;
-    return result;
-  }
-
   /**
    * Validate title and filename consistency
    */
@@ -652,21 +575,19 @@ class PRValidator {
       // For modified files, get the latest version
       if (file.status === 'modified') {
         const [owner, repo] = config.github.repository.split('/');
-        const response = await this.octokit.rest.repos.getContent({
+        const content = await githubService.getFileContent(
+          file.filename,
+          prData.headSha,
           owner,
-          repo,
-          path: file.filename,
-          ref: prData.headSha
-        });
+          repo
+        );
         
-        if (response.data.content) {
-          return Buffer.from(response.data.content, 'base64').toString('utf8');
-        }
+        return content;
       }
 
       return null;
     } catch (error) {
-      console.error('Failed to get file content:', error);
+      logger.error('Failed to get file content:', error);
       return null;
     }
   }
@@ -706,6 +627,7 @@ class PRValidator {
       console.log(`   File: ${validationResult.details.fileName}`);
     } else {
       console.log(`❌ PR #${prNumber} validation failed`);
+      console.log('Validation errors:', JSON.stringify(validationResult.errors, null, 2));
       validationResult.errors.forEach((error, index) => {
         console.log(`   Error ${index + 1}: ${error}`);
       });
@@ -722,11 +644,48 @@ class PRValidator {
   /**
    * Generate validation report message (for GitHub comments)
    */
-  generateValidationReport(validationResult, mentionUser = null) {
-    if (validationResult.isValid) {
-      return `## ✅ PR Validation Passed
+  async generateValidationReport(validationResult, mentionUser = null) {
+    const report = validationResult.isValid
+      ? this.generateSuccessReport(validationResult, mentionUser)
+      : this.generateFailureReport(validationResult, mentionUser);
 
-**Validation Results:**
+    try {
+      // Post the report as a PR comment
+      if (process.env.PR_NUMBER) {
+        const [owner, repo] = config.github.repository.split('/');
+        await githubService.createPullRequestComment(
+          process.env.PR_NUMBER,
+          report,
+          owner,
+          repo
+        );
+
+        // Update PR labels based on validation result
+        const labels = validationResult.isValid
+          ? ['validation-passed']
+          : ['validation-failed'];
+        
+        await githubService.updatePullRequestLabels(
+          process.env.PR_NUMBER,
+          labels,
+          owner,
+          repo
+        );
+      }
+    } catch (error) {
+      logger.error('Failed to post validation report:', error);
+    }
+
+    return report;
+  }
+
+  /**
+   * Generate success report
+   */
+  generateSuccessReport(validationResult, mentionUser) {
+    return `✅ PR Validation Passed
+
+${mentionUser ? `@${mentionUser} ` : ''}**Validation Results:**
 - ✅ Title format is correct
 - ✅ PR description length meets requirements
 - ✅ File count meets requirements (1 file)
@@ -740,30 +699,34 @@ class PRValidator {
 - **File:** ${validationResult.details.fileName}
 
 This PR meets all requirements and can proceed with review.`;
-    } else {
-      let report = `## ❌ PR Validation Failed
+  }
+
+  /**
+   * Generate failure report
+   */
+  generateFailureReport(validationResult, mentionUser) {
+    let report = `❌ PR Validation Failed
 
 ${mentionUser ? `@${mentionUser} ` : ''}**The following issues were found:**
 `;
       
-      validationResult.errors.forEach((error, index) => {
-        report += `${index + 1}. ❌ ${error}\n`;
+    validationResult.errors.forEach((error, index) => {
+      report += `${index + 1}. ❌ ${error}\n`;
+    });
+
+    // Generate targeted help information based on specific errors
+    const helpSections = this.generateTargetedHelp(validationResult.errors);
+    
+    if (helpSections.length > 0) {
+      report += `\n**Solutions:**\n`;
+      helpSections.forEach((section, index) => {
+        report += `\n### ${index + 1}. ${section.title}\n${section.content}\n`;
       });
-
-      // Generate targeted help information based on specific errors
-      const helpSections = this.generateTargetedHelp(validationResult.errors);
-      
-      if (helpSections.length > 0) {
-        report += `\n**Solutions:**\n`;
-        helpSections.forEach((section, index) => {
-          report += `\n### ${index + 1}. ${section.title}\n${section.content}\n`;
-        });
-      }
-
-      report += `\n**Need help?** Please refer to the [PR template](https://raw.githubusercontent.com/PublicFreeSuffix/PublicFreeSuffix/refs/heads/main/.github/PULL_REQUEST_TEMPLATE/WHOIS_FILE_OPERATION.md) or check the project documentation.`;
-
-      return report;
     }
+
+    report += `\n**Need help?** Please refer to the [PR template](${config.github.templateUrl}) or check the project documentation.`;
+
+    return report;
   }
 
   /**
@@ -863,6 +826,12 @@ whois/mycompany.so.kg.json
     };
 
     errors.forEach(error => {
+      // 添加对 undefined 错误的检查
+      if (!error) {
+        console.warn('Encountered undefined error in categorizeErrors');
+        return;
+      }
+      
       const errorLower = error.toLowerCase();
       
       if (errorLower.includes('title format') || errorLower.includes('pr title')) {
@@ -955,15 +924,10 @@ whois/mycompany.so.kg.json
    */
   async validateSLDStatus(sld) {
     try {
-      const status = await sldService.getSLDStatus(sld);
+      const isAvailable = await sldService.isSLDAvailable(sld);
       
-      if (!status) {
-        this.errors.push(`Unable to retrieve status information for SLD "${sld}"`);
-        return false;
-      }
-
-      if (status.toLowerCase() !== 'ok') {
-        this.errors.push(`SLD "${sld}" has status "${status}" which is not available. Only SLDs with status "ok" are accepted`);
+      if (!isAvailable) {
+        this.errors.push(`SLD "${sld}" is not available. Only SLDs with status "live" are accepted`);
         return false;
       }
 

@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
+const config = require('./config');
+const logger = require('./logger');
 
 class SLDService {
   constructor() {
-    this.cacheFilePath = path.join(__dirname, 'sld_cache.json');
+    this.cacheFilePath = path.join(__dirname, config.sld.cache.filename);
     this.cachedSLDList = null;
     this.lastUpdateTime = null;
-    this.cacheTimeout = 24 * 60 * 60 * 1000; // 24 hours
+    this.cacheTimeout = config.sld.cache.timeout;
     
     // Load cache on startup
     this.loadFromCache();
@@ -14,117 +16,157 @@ class SLDService {
 
   /**
    * Get supported SLD list
+   * @returns {Promise<string[]>} 返回所有可用的SLD列表
    */
   async getSupportedSLDs() {
     try {
-      // Check if cache is still valid
-      if (this.isCacheValid()) {
-        console.log('Using cached SLD list');
-        return Object.keys(this.cachedSLDList);
-      }
+      const sldList = await this.getSLDList();
+      if (!sldList) return [];
 
-      console.log('Cache expired or not exists, reading SLD list from local file');
-      
-      // Try to read from local file
-      const sldList = await this.readSLDList();
-      
-      if (sldList && Object.keys(sldList).length > 0) {
-        // Update cache
-        this.updateCache(sldList);
-        return Object.keys(sldList);
-      } else {
-        console.warn('Local file read failed or empty SLD list');
-        return [];
-      }
+      // 只返回状态为live的SLD
+      return Object.entries(sldList)
+        .filter(([, info]) => info.status === config.sld.status.live)
+        .map(([sld]) => sld);
 
     } catch (error) {
-      console.error('Error occurred while getting SLD list:', error);
-      return this.getAvailableSLDs();
+      logger.error('Error occurred while getting SLD list:', error);
+      return [];
     }
   }
 
   /**
-   * Get SLD status
+   * 检查SLD是否可用
+   * @param {string} sld - 要检查的SLD
+   * @returns {Promise<boolean>} 如果SLD存在且状态为live则返回true
    */
-  async getSLDStatus(sld) {
+  async isSLDAvailable(sld) {
     try {
-      // Check if cache is still valid
-      if (this.isCacheValid() && this.cachedSLDList) {
-        console.log('Using cached SLD info');
-        return this.cachedSLDList[sld]?.status || null;
-      }
+      const sldList = await this.getSLDList();
+      if (!sldList) return false;
 
-      console.log('Cache expired or not exists, reading SLD list from local file');
-      
-      // Try to read from local file
-      const sldList = await this.readSLDList();
-      
-      if (sldList && Object.keys(sldList).length > 0) {
-        // Update cache
-        this.updateCache(sldList);
-        return sldList[sld]?.status || null;
-      } else {
-        console.warn('Local file read failed or empty SLD list');
-        return null;
-      }
-
+      return sldList[sld]?.status === config.sld.status.live;
     } catch (error) {
-      console.error('Error occurred while getting SLD status:', error);
+      logger.error(`Error checking SLD availability for ${sld}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 获取SLD信息
+   * @param {string} sld - 要获取信息的SLD
+   * @returns {Promise<Object|null>} SLD信息对象或null
+   */
+  async getSLDInfo(sld) {
+    try {
+      const sldList = await this.getSLDList();
+      return sldList?.[sld] || null;
+    } catch (error) {
+      logger.error(`Error getting SLD info for ${sld}:`, error);
       return null;
     }
   }
 
   /**
-   * Read SLD list from local file
+   * 获取SLD列表（优先使用缓存）
+   * @private
+   * @returns {Promise<Object|null>} SLD列表对象或null
+   */
+  async getSLDList() {
+    try {
+      // 检查缓存是否有效
+      if (this.isCacheValid()) {
+        logger.debug('Using cached SLD list');
+        return this.cachedSLDList;
+      }
+
+      logger.info('Cache expired or not exists, reading SLD list from file');
+      
+      // 读取文件
+      const sldList = await this.readSLDList();
+      
+      if (sldList && Object.keys(sldList).length > 0) {
+        // 更新缓存
+        this.updateCache(sldList);
+        return sldList;
+      }
+
+      logger.warn('No valid SLD list found');
+      return null;
+
+    } catch (error) {
+      logger.error('Error getting SLD list:', error);
+      return this.cachedSLDList; // 发生错误时返回缓存的数据（即使已过期）
+    }
+  }
+
+  /**
+   * 从文件读取SLD列表
+   * @private
    */
   async readSLDList() {
     try {
-      const filePath = path.resolve(__dirname, '../../public_sld_list.json');
-      console.log(`Reading SLD list from local file: ${filePath}`);
+      const filePath = path.resolve(__dirname, config.sld.localPath);
+      logger.debug(`Reading SLD list from file: ${filePath}`);
 
       const data = await fs.promises.readFile(filePath, 'utf8');
       const sldList = JSON.parse(data);
       
-      // Validate the SLD list format
+      // 验证数据格式
       if (!this.validateSLDList(sldList)) {
         throw new Error('Invalid SLD list format');
       }
 
-      console.log(`Successfully read ${Object.keys(sldList).length} SLDs`);
+      logger.info(`Successfully read ${Object.keys(sldList).length} SLDs`);
       return sldList;
 
     } catch (error) {
-      console.error('Failed to read local SLD list:', error.message);
+      logger.error(`Failed to read SLD list: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * Validate SLD list format
+   * 验证SLD列表格式
+   * @private
    */
   validateSLDList(sldList) {
     if (!sldList || typeof sldList !== 'object') {
       return false;
     }
 
-    // Check each SLD entry
+    // 检查每个SLD条目
     for (const [sld, info] of Object.entries(sldList)) {
-      if (!info || typeof info !== 'object') return false;
-      if (!info.status || typeof info.status !== 'string') return false;
-      if (!info.operator || typeof info.operator !== 'object') return false;
-      
-      const operator = info.operator;
-      if (!operator.organization || typeof operator.organization !== 'string') return false;
-      if (!('website' in operator) || typeof operator.website !== 'string') return false;
-      if (!('created_at' in operator) || typeof operator.created_at !== 'string') return false;
-      if (!('description' in operator) || typeof operator.description !== 'string') return false;
+      if (!this.validateSLDEntry(sld, info)) {
+        return false;
+      }
     }
 
     return true;
   }
 
   /**
-   * Check if cache is still valid
+   * 验证单个SLD条目
+   * @private
+   */
+  validateSLDEntry(sld, info) {
+    // 基本类型检查
+    if (!info || typeof info !== 'object') return false;
+    if (!info.status || typeof info.status !== 'string') return false;
+    if (!info.operator || typeof info.operator !== 'object') return false;
+
+    // 检查operator字段
+    const operator = info.operator;
+    if (!operator.organization || typeof operator.organization !== 'string') return false;
+    if (!operator.website || typeof operator.website !== 'string') return false;
+    if (!operator.created_at || typeof operator.created_at !== 'string') return false;
+    if (!operator.description || typeof operator.description !== 'string') return false;
+
+    return true;
+  }
+
+  /**
+   * 检查缓存是否有效
+   * @private
    */
   isCacheValid() {
     if (!this.cachedSLDList || !this.lastUpdateTime) {
@@ -137,7 +179,8 @@ class SLDService {
   }
 
   /**
-   * Update cache with new SLD list
+   * 更新缓存
+   * @private
    */
   updateCache(sldList) {
     try {
@@ -151,14 +194,15 @@ class SLDService {
       this.cachedSLDList = sldList;
       this.lastUpdateTime = cacheData.timestamp;
       
-      console.log(`Cache updated with ${Object.keys(sldList).length} SLDs`);
+      logger.debug(`Cache updated with ${Object.keys(sldList).length} SLDs`);
     } catch (error) {
-      console.error('Failed to update cache:', error.message);
+      logger.error('Failed to update cache:', error.message);
     }
   }
 
   /**
-   * Load from local cache
+   * 从缓存加载数据
+   * @private
    */
   loadFromCache() {
     try {
@@ -170,29 +214,18 @@ class SLDService {
           this.cachedSLDList = cacheData.sldList;
           this.lastUpdateTime = cacheData.timestamp || 0;
           
-          console.log(`Loaded ${Object.keys(this.cachedSLDList).length} SLDs from cache, cache time: ${new Date(this.lastUpdateTime).toLocaleString()}`);
+          logger.debug(`Loaded ${Object.keys(this.cachedSLDList).length} SLDs from cache, cache time: ${new Date(this.lastUpdateTime).toLocaleString()}`);
         }
       }
     } catch (error) {
-      console.error('Failed to load cache:', error.message);
+      logger.error('Failed to load cache:', error.message);
       this.cachedSLDList = null;
       this.lastUpdateTime = null;
     }
   }
-
-  /**
-   * Get available SLDs (use cache even if expired)
-   */
-  getAvailableSLDs() {
-    if (this.cachedSLDList && Object.keys(this.cachedSLDList).length > 0) {
-      console.warn('Using expired cached SLD list');
-      return Object.keys(this.cachedSLDList);
-    }
-    return [];
-  }
 }
 
-// Create singleton instance
+// 创建单例实例
 const sldService = new SLDService();
 
 module.exports = sldService; 

@@ -1,0 +1,15 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "number": 10,
+    "head": {
+      "ref": "request-note.no.kg"
+    },
+    "base": {
+      "ref": "main"
+    }
+  },
+  "repository": {
+    "full_name": "PublicFreeSuffix/PublicFreeSuffix"
+  }
+}

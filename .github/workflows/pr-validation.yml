@@ -1,16 +1,26 @@
 name: PR Validation
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  # 自动触发
+  pull_request_target:  # 改用 pull_request_target 以获得正确的token权限
+    types: [opened, synchronize, reopened, edited]
     paths:
       - 'whois/*.json'
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate'
+        required: true
+        type: string
+      force_validation:
+        description: 'Force validation even if PR is closed'
+        required: false
+        type: boolean
+        default: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  statuses: write
+# 全局权限设置
+permissions: write-all
 
 jobs:
   validate-pr:
@@ -22,48 +32,105 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
+        ref: ${{ github.event.pull_request.head.sha }}  # 确保检出正确的PR分支
+        token: ${{ secrets.MY_GITHUB_TOKEN }}
+        repository: ${{ github.event.pull_request.head.repo.full_name }}  # 确保可以检出fork的PR
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
-        cache: 'npm'
+        node-version: '20'
 
     - name: Install dependencies
+      working-directory: .github/scripts
       run: |
-        cd .github/scripts
+        # 确保生成 package-lock.json
+        if [ ! -f "package-lock.json" ]; then
+          npm install
+        fi
+        # 使用 ci 进行清洁安装
         npm ci
 
     - name: Get PR information
       id: pr-info
       uses: actions/github-script@v7
       with:
+        github-token: ${{ secrets.MY_GITHUB_TOKEN }}
         script: |
-          const { data: pullRequest } = await github.rest.pulls.get({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            pull_number: context.issue.number
-          });
-          
-          const { data: files } = await github.rest.pulls.listFiles({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            pull_number: context.issue.number
-          });
-          
-          core.setOutput('pr-title', pullRequest.title);
-          core.setOutput('pr-body', pullRequest.body || '');
-          core.setOutput('pr-number', context.issue.number);
-          core.setOutput('pr-author', pullRequest.user.login);
-          core.setOutput('files', JSON.stringify(files));
-          core.setOutput('head-sha', pullRequest.head.sha);
+          try {
+            let prNumber;
+            // 根据触发方式获取 PR 号
+            if ('${{ github.event_name }}' === 'workflow_dispatch') {
+              prNumber = '${{ github.event.inputs.pr_number }}';
+              const forceValidation = '${{ github.event.inputs.force_validation }}' === 'true';
+              
+              const { data: pullRequest } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(prNumber)
+              });
+              
+              if (pullRequest.state === 'closed' && !forceValidation) {
+                core.setFailed(`PR #${prNumber} is closed. Use force_validation to validate anyway.`);
+                return;
+              }
+            } else {
+              prNumber = context.payload.pull_request.number;
+            }
+            
+            // 获取PR信息
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(prNumber)
+            });
+            
+            // 获取文件变更
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt(prNumber)
+            });
+            
+            // 确保所有输出都有值
+            core.setOutput('pr-title', pullRequest.title || '');
+            core.setOutput('pr-body', pullRequest.body || '');
+            core.setOutput('pr-number', prNumber.toString());
+            core.setOutput('pr-author', pullRequest.user?.login || 'unknown');
+            core.setOutput('files', JSON.stringify(files || []));
+            core.setOutput('head-sha', pullRequest.head?.sha || '');
+            core.setOutput('pr-state', pullRequest.state || 'unknown');
+            core.setOutput('pr-repo', pullRequest.head?.repo?.full_name || context.repo.full_name);
+            
+          } catch (error) {
+            core.setFailed(`Failed to get PR information: ${error.message}`);
+            // 设置默认值以防止后续步骤出错
+            core.setOutput('pr-title', '');
+            core.setOutput('pr-body', '');
+            core.setOutput('pr-number', '0');
+            core.setOutput('pr-author', 'unknown');
+            core.setOutput('files', '[]');
+            core.setOutput('head-sha', '');
+            core.setOutput('pr-state', 'unknown');
+            core.setOutput('pr-repo', context.repo.full_name);
+          }
+
+    - name: Debug PR Info
+      if: always()
+      run: |
+        echo "PR Title: ${{ steps.pr-info.outputs.pr-title }}"
+        echo "PR Body: ${{ steps.pr-info.outputs.pr-body }}"
+        echo "PR Number: ${{ steps.pr-info.outputs.pr-number }}"
+        echo "PR Author: ${{ steps.pr-info.outputs.pr-author }}"
+        echo "PR Files: ${{ steps.pr-info.outputs.files }}"
+        echo "Head SHA: ${{ steps.pr-info.outputs.head-sha }}"
+        echo "PR State: ${{ steps.pr-info.outputs.pr-state }}"
+        echo "PR Repository: ${{ steps.pr-info.outputs.pr-repo }}"
 
     - name: Validate Pull Request
-      id: validate
-      run: |
-        cd .github/scripts
-        node validate-pr.js
+      if: steps.pr-info.outputs.pr-title != ''
+      working-directory: .github/scripts
+      run: node validate-pr.js
       env:
         PR_TITLE: ${{ steps.pr-info.outputs.pr-title }}
         PR_BODY: ${{ steps.pr-info.outputs.pr-body }}
@@ -71,13 +138,14 @@ jobs:
         PR_AUTHOR: ${{ steps.pr-info.outputs.pr-author }}
         PR_FILES: ${{ steps.pr-info.outputs.files }}
         HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
+        MY_GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ steps.pr-info.outputs.pr-repo }}
 
     - name: Comment on PR
-      if: always()
+      if: always() && steps.pr-info.outputs.pr-title != ''
       uses: actions/github-script@v7
       with:
+        github-token: ${{ secrets.MY_GITHUB_TOKEN }}
         script: |
           const fs = require('fs');
           
@@ -89,15 +157,17 @@ jobs:
             validationResult = {
               isValid: false,
               errors: ['Failed to read validation results'],
-              report: '## ❌ PR Validation Failed\n\nInternal error occurred during validation.'
+              report: '❌ PR Validation Failed\n\nInternal error occurred during validation.'
             };
           }
+          
+          const prNumber = '${{ steps.pr-info.outputs.pr-number }}';
           
           // Find existing validation comment
           const { data: comments } = await github.rest.issues.listComments({
             owner: context.repo.owner,
             repo: context.repo.repo,
-            issue_number: context.issue.number
+            issue_number: parseInt(prNumber)
           });
           
           const botComment = comments.find(comment => 
@@ -105,7 +175,11 @@ jobs:
             comment.body.includes('PR Validation')
           );
           
-          const commentBody = validationResult.report;
+          const commentBody = validationResult.report + 
+            '\n\n---\n' + 
+            ('${{ github.event_name }}' === 'workflow_dispatch' 
+              ? '*This validation was triggered manually by @${{ github.actor }}*' 
+              : '*This validation was triggered automatically*');
           
           if (botComment) {
             // Update existing comment
@@ -120,15 +194,16 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: parseInt(prNumber),
               body: commentBody
             });
           }
 
     - name: Set PR status
-      if: always()
+      if: always() && steps.pr-info.outputs.pr-title != ''
       uses: actions/github-script@v7
       with:
+        github-token: ${{ secrets.MY_GITHUB_TOKEN }}
         script: |
           const fs = require('fs');
           
@@ -154,7 +229,7 @@ jobs:
           });
 
     - name: Fail if validation failed
-      if: always()
+      if: always() && steps.pr-info.outputs.pr-title != ''
       run: |
         if [ -f .github/scripts/validation-result.json ]; then
           VALIDATION_RESULT=$(cat .github/scripts/validation-result.json)
