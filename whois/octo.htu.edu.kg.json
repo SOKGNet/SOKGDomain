@@ -1,0 +1,14 @@
+{
+  "registrant": "zhongxy.boy@gmail.com",
+  "domain": "octo",
+  "sld": "htu.edu.kg",
+  "nameservers": [
+    "gigi.ns.cloudflare.com",
+    "rob.ns.cloudflare.com"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
