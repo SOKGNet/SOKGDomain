@@ -1,0 +1,14 @@
+{
+  "registrant": "lgccrush001@gmail.com",
+  "domain": "lgccrush",
+  "sld": "htu.edu.kg",
+  "nameservers": [
+    "ns1.cloudflare.com",
+    "ns2.cloudflare.com"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
