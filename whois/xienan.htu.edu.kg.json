@@ -1,0 +1,13 @@
+{
+  "registrant": "xienan680@gmail.com",
+  "domain": "xienan",
+  "sld": "htu.edu.kg",
+  "nameservers": [
+    "ftp1.hostypanel.com"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
