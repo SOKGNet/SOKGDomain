@@ -1,0 +1,14 @@
+{
+  "registrant": "3693179996@qq.com",
+  "domain": "hstest",
+  "sld": "htu.edu.kg",
+  "nameservers": [
+    "ns1.publicfreesuffix.org",
+    "ns2.publicfreesuffix.org"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
