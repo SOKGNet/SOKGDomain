@@ -1,0 +1,16 @@
+{
+  "registrant": "xux851@gmail.com",
+  "domain": "niu",
+  "sld": "htu.edu.kg",
+  "nameservers": [
+    "ns61.cloudns.net",
+    "ns62.cloudns.com",
+    "ns63.cloudns.net",
+    "ns64.cloudns.uk"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
