@@ -1,0 +1,14 @@
+{
+  "registrant": "miniclipbalpool01@gmail.com",
+  "domain": "penggik",
+  "sld": "no.kg",
+  "nameservers": [
+    "jules.ns.cloudflare.com",
+    "maria.ns.cloudflare.com"
+  ],
+  "agree_to_agreements": {
+    "registration_and_use_agreement": true,
+    "acceptable_use_policy": true,
+    "privacy_policy": true
+  }
+}
