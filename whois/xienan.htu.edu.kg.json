@@ -3,6 +3,7 @@
   "domain": "xienan",
   "sld": "htu.edu.kg",
   "nameservers": [
+    "ftp1.hostypanel.com",
     "ftp1.hostypanel.com"
   ],
   "agree_to_agreements": {
